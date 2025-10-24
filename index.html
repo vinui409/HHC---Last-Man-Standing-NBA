@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NBA Weekly Picks (Friends)</title>
+<style>
+  :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+  body { margin: 24px; }
+  h1 { margin: 0 0 8px; font-size: 22px; }
+  .sub { margin:0 0 16px; color:#666; font-size:13px;}
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px; }
+  .bar > * { white-space: nowrap; }
+  select, input[type="text"], button, .btn {
+    padding: 8px 10px; border:1px solid #bbb; border-radius:10px; background:#fafafa; font-size:14px;
+  }
+  button:hover { background:#f0f0f0; cursor:pointer; }
+  .btn-danger { border-color:#d33; background:#fff3f2; }
+  .btn-danger:hover { background:#ffe8e6; }
+  .btn-outline { background:white; }
+  .wrap { border:1px solid #e3e3e3; border-radius:12px; overflow:auto; }
+  table { width:100%; border-collapse: collapse; table-layout: fixed; }
+  th, td { border:1px solid #eee; padding:8px; }
+  th { text-align:left; font-size:13px; background:#fafafa; }
+  td .row-actions { display:flex; gap:6px; }
+  .name { width: 180px; }
+  .narrow { width: 200px; }
+  .winner-col { width: 90px; text-align:center; }
+  .ok { background:#e8f5e9; border:1px solid #a5d6a7; padding:6px 10px; border-radius:8px; display:inline-block; }
+  .warn { background:#fff8e1; border:1px solid #ffcc80; padding:6px 10px; border-radius:8px; display:inline-block; }
+  .err { background:#fff3f2; border:1px solid #ef9a9a; padding:6px 10px; border-radius:8px; display:inline-block; }
+  .error-cell { outline:2px solid #d33; background:#fff3f2; }
+  .name-winner { color: #1b5e20; font-weight: 600; }
+  .right { margin-left:auto; }
+  .flex { display:flex; gap:8px; align-items:center; }
+  .small { font-size:12px; color:#666; }
+  @media (max-width: 900px){
+    .name { width: 140px; }
+    .narrow { width: 180px; }
+  }
+</style>
+</head>
+<body>
+  <h1>NBA Weekly Picks</h1>
+  <p class="sub">8 friends pick an NBA team each week (1–32) plus that team's opponent. A friend <strong>cannot pick the same team as the previous week</strong>. Multiple friends can pick the same team in a week.</p>
+
+  <div class="bar">
+    <div class="flex">
+      <label for="weekSelect"><strong>Week:</strong></label>
+      <select id="weekSelect"></select>
+    </div>
+
+    <button id="addFriendBtn">Add Friend</button>
+    <button id="saveBtn">Save</button>
+    <button id="exportBtn">Export (.json)</button>
+    <label class="btn btn-outline" for="importFile">Import (.json)</label>
+    <input type="file" id="importFile" accept="application/json" style="display:none"/>
+    <button id="resetBtn" class="btn-danger">Reset All</button>
+    <span class="right small">Autosaves to your browser.</span>
+  </div>
+
+  <div class="wrap">
+    <table id="grid">
+      <thead>
+        <tr>
+          <th style="width:64px;">#</th>
+          <th class="name">Player</th>
+          <th class="narrow">Team (Week)</th>
+          <th class="narrow">Opponent</th>
+          <th class="winner-col">Winner</th>
+          <th style="width:140px;">Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div id="status" style="margin-top:10px; min-height:24px;"></div>
+
+<script>
+(() => {
+  const STORAGE_KEY = "nba_weekly_picks_v1";
+  const MAX_WEEKS = 32;
+  const DEFAULT_FRIENDS = [
+    "Vinu","aryan","Mateen","danny","armon","mahyar","dv","patty"
+  ];
+  const TEAMS = [
+    "Hawks","Celtics","Nets","Hornets","Bulls","Cavaliers","Mavericks","Nuggets","Pistons","Warriors",
+    "Rockets","Pacers","Clippers","Lakers","Grizzlies","Heat","Bucks","Timberwolves","Pelicans","Knicks",
+    "Thunder","Magic","76ers","Suns","Trail Blazers","Kings","Spurs","Raptors","Jazz","Wizards"
+  ].sort();
+
+  /*** State format:
+   * {
+   *   version:1, weeks:32,
+   *   friends:[ {
+   *     id:string, name:string,
+   *     picks:[ {team:string, opp:string, winner?:boolean} * 32 ]
+   *   } ]
+   * }
+   */
+  let state = load() || bootstrap();
+
+  // UI elements
+  const weekSelect = document.getElementById('weekSelect');
+  const tbody = document.querySelector('#grid tbody');
+  const addFriendBtn = document.getElementById('addFriendBtn');
+  const saveBtn = document.getElementById('saveBtn');
+  const exportBtn = document.getElementById('exportBtn');
+  const importFile = document.getElementById('importFile');
+  const resetBtn = document.getElementById('resetBtn');
+  const status = document.getElementById('status');
+
+  // Build week options
+  for (let w = 1; w <= MAX_WEEKS; w++) {
+    const opt = document.createElement('option');
+    opt.value = String(w);
+    opt.textContent = `Week ${w}`;
+    weekSelect.appendChild(opt);
+  }
+
+  // Persist current week in location hash for convenience
+  const initialWeek = Math.min(Math.max(1, Number(location.hash.replace("#","")) || 1), MAX_WEEKS);
+  weekSelect.value = String(initialWeek);
+
+  function bootstrap(){
+    return {
+      version:1,
+      weeks: MAX_WEEKS,
+      friends: DEFAULT_FRIENDS.map((n) => ({
+        id: cryptoRandomId(),
+        name: n,
+        picks: Array.from({length:MAX_WEEKS}, () => ({team:"", opp:"", winner:false}))
+      }))
+    };
+  }
+
+  function cryptoRandomId(){
+    const a = new Uint8Array(8);
+    if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a);
+    return Array.from(a).map(x=>x.toString(16).padStart(2,'0')).join('');
+  }
+
+  function save() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+  function load() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
+  function setMsg(text, type="ok") {
+    const cls = type === "ok" ? "ok" : type === "warn" ? "warn" : "err";
+    status.innerHTML = text ? `<span class="${cls}">${text}</span>` : "";
+  }
+
+  function render() {
+    const weekIndex = Number(weekSelect.value) - 1;
+    location.hash = String(weekIndex+1);
+    tbody.innerHTML = "";
+
+    state.friends.forEach((f, idx) => {
+      // Ensure older saves without 'winner' still work
+      if (!f.picks[weekIndex]) f.picks[weekIndex] = {team:"", opp:"", winner:false};
+      if (typeof f.picks[weekIndex].winner !== "boolean") f.picks[weekIndex].winner = false;
+
+      const tr = document.createElement('tr');
+
+      const tdNum = document.createElement('td');
+      tdNum.textContent = String(idx+1);
+      tr.appendChild(tdNum);
+
+      const tdName = document.createElement('td');
+      const nameInput = document.createElement('input');
+      nameInput.type = "text";
+      nameInput.value = f.name || "";
+      nameInput.placeholder = "Friend name";
+      nameInput.addEventListener('input', () => { f.name = nameInput.value.trim(); autosave(); });
+      tdName.appendChild(nameInput);
+      tr.appendChild(tdName);
+
+      const tdTeam = document.createElement('td');
+      const teamSel = buildTeamSelect(f.picks[weekIndex].team);
+      teamSel.addEventListener('change', () => {
+        f.picks[weekIndex].team = teamSel.value;
+        validateRow(tr, f, weekIndex);
+        autosave();
+      });
+      tdTeam.appendChild(teamSel);
+      tr.appendChild(tdTeam);
+
+      const tdOpp = document.createElement('td');
+      const oppSel = buildTeamSelect(f.picks[weekIndex].opp);
+      oppSel.addEventListener('change', () => {
+        f.picks[weekIndex].opp = oppSel.value;
+        autosave();
+      });
+      tdOpp.appendChild(oppSel);
+      tr.appendChild(tdOpp);
+
+      // Winner column (checkbox toggles green name)
+      const tdWinner = document.createElement('td');
+      tdWinner.style.textAlign = "center";
+      const winBox = document.createElement('input');
+      winBox.type = "checkbox";
+      winBox.checked = !!f.picks[weekIndex].winner;
+      // apply initial style
+      applyWinnerStyle(nameInput, winBox.checked);
+      winBox.addEventListener('change', () => {
+        f.picks[weekIndex].winner = winBox.checked;
+        applyWinnerStyle(nameInput, winBox.checked);
+        autosave();
+      });
+      tdWinner.appendChild(winBox);
+      tr.appendChild(tdWinner);
+
+      const tdActions = document.createElement('td');
+      const actions = document.createElement('div');
+      actions.className = "row-actions";
+      const delBtn = document.createElement('button');
+      delBtn.textContent = "Delete";
+      delBtn.className = "btn-danger";
+      delBtn.addEventListener('click', () => {
+        if (!confirm(`Remove ${f.name || "this friend"}?`)) return;
+        state.friends.splice(idx,1);
+        save(); render(); setMsg("Friend removed.", "warn");
+      });
+      actions.appendChild(delBtn);
+      tdActions.appendChild(actions);
+      tr.appendChild(tdActions);
+
+      tbody.appendChild(tr);
+
+      // initial validation for this row against previous week rule
+      validateRow(tr, f, weekIndex);
+    });
+  }
+
+  function applyWinnerStyle(nameInput, isWinner){
+    if (isWinner) {
+      nameInput.classList.add("name-winner");
+    } else {
+      nameInput.classList.remove("name-winner");
+    }
+  }
+
+  function buildTeamSelect(selected) {
+    const sel = document.createElement('select');
+    const blank = document.createElement('option');
+    blank.value = "";
+    blank.textContent = "— Select team —";
+    sel.appendChild(blank);
+    TEAMS.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t;
+      opt.textContent = t;
+      sel.appendChild(opt);
+    });
+    sel.value = selected || "";
+    sel.style.width = "100%";
+    return sel;
+  }
+
+  // Rule: same friend cannot pick the same team as the previous week
+  function validateRow(tr, friend, weekIndex) {
+    tr.querySelectorAll('select').forEach(s => s.classList.remove('error-cell'));
+    if (weekIndex <= 0) return; // week 1 has no previous
+    const prevTeam = friend.picks[weekIndex-1]?.team?.trim() || "";
+    const thisTeam = friend.picks[weekIndex]?.team?.trim() || "";
+    if (prevTeam && thisTeam && prevTeam.toLowerCase() === thisTeam.toLowerCase()) {
+      const teamSelect = tr.querySelectorAll('select')[0];
+      teamSelect.classList.add('error-cell');
+      setMsg(`${friend.name || "Friend"} cannot pick "${thisTeam}" in Week ${weekIndex+1} because they picked it in Week ${weekIndex}.`, "err");
+    } else {
+      setMsg(`Week ${weekIndex+1} ready.`, "ok");
+    }
+  }
+
+  function autosave(){
+    save();
+  }
+
+  // Event bindings
+  weekSelect.addEventListener('change', () => render());
+  addFriendBtn.addEventListener('click', () => {
+    state.friends.push({
+      id: cryptoRandomId(),
+      name: "",
+      picks: Array.from({length:MAX_WEEKS}, () => ({team:"", opp:"", winner:false}))
+    });
+    save(); render();
+  });
+  saveBtn.addEventListener('click', () => {
+    const weekIndex = Number(weekSelect.value) - 1;
+    let ok = true;
+    state.friends.forEach((f, i) => {
+      const tr = tbody.rows[i];
+      const prevTeam = weekIndex > 0 ? f.picks[weekIndex-1].team : "";
+      const thisTeam = f.picks[weekIndex].team;
+      if (prevTeam && thisTeam && prevTeam.toLowerCase() === thisTeam.toLowerCase()) {
+        tr.querySelectorAll('select')[0].classList.add('error-cell');
+        ok = false;
+      }
+    });
+    if (ok) setMsg("Saved.", "ok"); else setMsg("Fix highlighted picks (same as previous week).", "err");
+    save();
+  });
+
+  exportBtn.addEventListener('click', () => {
+    const data = JSON.stringify(state, null, 2);
+    const blob = new Blob([data], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = "nba_weekly_picks.json"; a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  importFile.addEventListener('change', (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const incoming = JSON.parse(reader.result);
+        if (!incoming || !incoming.friends || !Array.isArray(incoming.friends)) throw new Error("Invalid file");
+        // Backward-compat: ensure winner fields exist
+        incoming.friends.forEach(fr => {
+          fr.picks = (fr.picks || []).map(p => ({
+            team: p.team || "",
+            opp: p.opp || "",
+            winner: typeof p.winner === "boolean" ? p.winner : false
+          }));
+        });
+        state = incoming;
+        save(); render(); setMsg("Imported successfully.", "ok");
+      } catch (err) {
+        setMsg("Import failed: invalid file.", "err");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  });
+
+  resetBtn.addEventListener('click', () => {
+    if (!confirm("Reset ALL data (all 32 weeks, all friends)?")) return;
+    localStorage.removeItem(STORAGE_KEY);
+    state = bootstrap();
+    render();
+    setMsg("All data reset.", "warn");
+  });
+
+  render();
+  setMsg(`Week ${weekSelect.value} ready.`, "ok");
+})();
+</script>
+</body>
+</html>
